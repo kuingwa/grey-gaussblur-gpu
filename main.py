@@ -4,10 +4,17 @@ from typing import Dict, List, Optional, Set
 from itertools import combinations
 
 
-# -----------------------------
-# Structures de données
-# -----------------------------
+# ---------------------------------------------------------------------------
+# Ce fichier contient le moteur principal du projet.
+# Il lit les fichiers JSON, modélise les données, applique les contraintes,
+# calcule un score, puis cherche une solution satisfaisante.
+# ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# 1) Structures de données
+# ---------------------------------------------------------------------------
+# Une classe Person représente une personne avec ses disponibilités,
+# ses préférences et ses antipathies.
 @dataclass
 class Person:
     name: str
@@ -20,6 +27,7 @@ class Person:
 
     @staticmethod
     def from_dict(d: Dict):
+        # Convertit un dictionnaire JSON en objet Person.
         return Person(
             name=d["name"],
             available=set(d.get("available", [])),
@@ -31,6 +39,7 @@ class Person:
         )
 
 
+# Une classe Task représente une tâche du planning avec ses contraintes.
 @dataclass
 class Task:
     name: str
@@ -46,6 +55,7 @@ class Task:
 
     @staticmethod
     def from_dict(d: Dict):
+        # Convertit un dictionnaire JSON en objet Task.
         return Task(
             name=d["name"],
             required_people=d.get("required_people", []),
@@ -60,6 +70,8 @@ class Task:
         )
 
 
+# Une affectation représente une tâche planifiée avec son créneau,
+# son lieu, les personnes qui la font et son score.
 @dataclass
 class Assignment:
     task_name: str
@@ -69,20 +81,20 @@ class Assignment:
     score: int
 
 
-# -----------------------------
-# Lecture JSON
-# -----------------------------
-
-
+# ---------------------------------------------------------------------------
+# 2) Lecture des fichiers JSON
+# ---------------------------------------------------------------------------
+# Cette fonction charge un fichier JSON et le transforme en diction Python.
 def load_json(path: str) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
 
 
-# -----------------------------
-# Planification
-# -----------------------------
-
+# ---------------------------------------------------------------------------
+# 3) Planification des tâches
+# ---------------------------------------------------------------------------
+# Cette partie décide quelles personnes doivent participer à chaque tâche,
+# à quel moment et dans quel lieu, en tenant compte des contraintes.
 
 def score_task_assignment(
     task: Task,
@@ -91,15 +103,20 @@ def score_task_assignment(
     location: str,
     people_by_name: Dict[str, Person],
 ) -> int:
+    # On initialise le score avec la valeur de base de la tâche.
     score = task.value
 
+    # Si les personnes obligatoires ne sont pas toutes présentes,
+    # alors la tâche est invalide et reçoit un très fort malus.
     required = set(task.required_people)
     if not required.issubset(people):
         return -10_000
 
+    # Si une personne interdite est présente, la tâche est rejetée.
     if any(p in task.forbidden_people for p in people):
         return -10_000
 
+    # On calcule le score selon les préférences et les antipathies.
     for p in people:
         person = people_by_name.get(p)
         if person is None:
@@ -120,17 +137,22 @@ def score_task_assignment(
         if task.name in person.disliked_tasks:
             score -= 3
 
+    # Bonus si la tâche est dans un endroit privilégié.
     if location in task.preferred_locations:
         score += 2
     if location not in task.allowed_locations:
         score -= 20
 
+    # Bonus si la tâche est dans un créneau privilégié.
     if timeslot in task.preferred_timeslots:
         score += 1
 
+    # On favorise les tâches qui ont un nombre de participants satisfaisant.
     if len(people) >= task.min_people:
         score += 5
 
+    # Si on dépasse le nombre maximum de personnes autorisées,
+    # on applique une pénalité sévère.
     if len(people) > task.max_people:
         score -= 100
 
@@ -143,15 +165,17 @@ def generate_candidates_for_task(
     people_by_name: Dict[str, Person],
     assigned_people_by_slot: Dict[str, Set[str]],
 ) -> List[List[str]]:
+    # On récupère toutes les personnes disponibles à ce créneau,
+    # en excluant celles déjà attribuées au même créneau.
     available = []
     for person_name, person in people_by_name.items():
         if timeslot in person.available and person_name not in assigned_people_by_slot.get(timeslot, set()):
             available.append(person_name)
 
+    # Les personnes interdites ne peuvent jamais être choisies.
     available = [p for p in available if p not in task.forbidden_people]
 
-    required = task.required_people
-    # priorité aux required_people
+    # Fonction de classement des candidats selon leur compatibilité.
     def rank(person_name: str) -> int:
         person = people_by_name[person_name]
         r = 0
@@ -167,29 +191,37 @@ def generate_candidates_for_task(
             r -= 4
         return r
 
+    # On trie les personnes de la plus compatible à la moins compatible.
     ordered = sorted(available, key=rank, reverse=True)
     results: List[List[str]] = []
 
+    # On teste plusieurs tailles de groupe entre le minimum et le maximum.
     for size in range(task.min_people, min(task.max_people, len(ordered)) + 1):
         combo = ordered[:size]
-        if set(required).issubset(combo):
+        if set(task.required_people).issubset(combo):
             results.append(combo)
 
+    # Si aucune combinaison n'a été trouvée avec un groupe normal,
+    # on tente au moins de garder les personnes obligatoires.
     if not results:
-        req_combo = [r for r in required if r in available]
-        if len(req_combo) == len(required):
+        req_combo = [r for r in task.required_people if r in available]
+        if len(req_combo) == len(task.required_people):
             results.append(req_combo)
 
     return results
 
 
 def solve_task_schedule(task_json_path: str) -> List[Assignment]:
+    # On charge les données du fichier JSON de planification.
     data = load_json(task_json_path)
+
+    # On transforme les tâches et les personnages en objets Python plus faciles à exploiter.
     tasks = [Task.from_dict(t) for t in data["tasks"]]
     people = {p["name"]: Person.from_dict(p) for p in data["characters"]}
     timeslots = data["timeslots"]
     locations = data["locations"]
 
+    # On trie les tâches pour traiter d'abord les plus compliquées.
     tasks = sorted(
         tasks,
         key=lambda t: (
@@ -200,9 +232,11 @@ def solve_task_schedule(task_json_path: str) -> List[Assignment]:
         ),
     )
 
+    # Ce dictionnaire mémorise les personnes déjà affectées à chaque créneau.
     assigned_people_by_slot: Dict[str, Set[str]] = {ts: set() for ts in timeslots}
     schedule: List[Assignment] = []
 
+    # Pour chaque tâche, on cherche la meilleure affectation possible.
     for task in tasks:
         best_assignment: Optional[Assignment] = None
         best_score = -10**9
@@ -211,6 +245,8 @@ def solve_task_schedule(task_json_path: str) -> List[Assignment]:
             for loc in locations:
                 candidates = generate_candidates_for_task(task, ts, people, assigned_people_by_slot)
                 for people_list in candidates:
+                    # Si un membre de cette combinaison est déjà pris à ce créneau,
+                    # on évite cette solution pour ne pas avoir de conflit.
                     if any(p in assigned_people_by_slot[ts] for p in people_list):
                         continue
 
@@ -225,6 +261,7 @@ def solve_task_schedule(task_json_path: str) -> List[Assignment]:
                             score=score,
                         )
 
+        # Si une bonne affectation a été trouvée, on la garde.
         if best_assignment is not None:
             schedule.append(best_assignment)
             for p in best_assignment.people:
@@ -233,12 +270,15 @@ def solve_task_schedule(task_json_path: str) -> List[Assignment]:
     return schedule
 
 
-# -----------------------------
-# Seating arrangement
-# -----------------------------
-
+# ---------------------------------------------------------------------------
+# 4) Arrangement des personnes / seating
+# ---------------------------------------------------------------------------
+# Cette partie cherche un groupe de personnes qui se complètent le mieux
+# en fonction des likes et dislikes.
 
 def score_seating_group(group: List[str], likes_map: Dict[str, Set[str]], dislikes_map: Dict[str, Set[str]]) -> int:
+    # On attribue des points si un membre aime un autre membre du groupe.
+    # On retire des points si quelqu'un déteste quelqu'un d'autre dans le groupe.
     score = 0
     for i in range(len(group)):
         for j in range(i + 1, len(group)):
@@ -251,6 +291,7 @@ def score_seating_group(group: List[str], likes_map: Dict[str, Set[str]], dislik
 
 
 def solve_seating(seating_json_path: str) -> List[str]:
+    # On lit le fichier JSON des personnes et de leurs relations.
     data = load_json(seating_json_path)
     people = data["people"]
     names = [p["name"] for p in people]
@@ -265,6 +306,7 @@ def solve_seating(seating_json_path: str) -> List[str]:
     best_group = []
     best_score = -10**9
 
+    # On teste plusieurs tailles de groupe pour trouver la meilleure composition.
     for size in range(2, min(6, len(names)) + 1):
         for combo in combinations(names, size):
             s = score_seating_group(list(combo), likes_map, dislikes_map)
@@ -275,13 +317,13 @@ def solve_seating(seating_json_path: str) -> List[str]:
     return best_group
 
 
-# -----------------------------
-# Main
-# -----------------------------
-
+# ---------------------------------------------------------------------------
+# 5) Fonction principale
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
-    print("=== Grey + GaussBlur, GPU - project implementation ===")
+    print("=== Grey + GaussBlur, GPU - projet d'implémentation ===")
 
+    # Étape 1 : résoudre la planification de tâches.
     schedule = solve_task_schedule("task_scheduling.json")
     if schedule:
         total = sum(a.score for a in schedule)
@@ -292,6 +334,7 @@ if __name__ == "__main__":
     else:
         print("Aucune planification valide trouvée.")
 
+    # Étape 2 : résoudre le groupe de seating.
     best_group = solve_seating("seating_arrangement.json")
     print("\nMeilleur groupe de seating :")
     print(best_group)
